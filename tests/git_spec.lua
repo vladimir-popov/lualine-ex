@@ -9,6 +9,11 @@ local function debug(msg)
     end
 end
 
+local function path(...)
+    local args = { ... }
+    return vim.fn.join(args, '/')
+end
+
 local function remove(path)
     debug('Removing ' .. path)
     os.execute('rm -rf ' .. path)
@@ -26,6 +31,38 @@ local function mktmpdir()
     debug('Working directory for tests is ' .. cwd)
     return cwd
 end
+
+local function touch(path)
+    debug('Touch file ' .. path)
+    os.execute('touch ' .. path)
+end
+
+describe('when cwd is outside of the git root', function()
+    local cwd
+
+    before_each(function()
+        cwd = mktmpdir()
+    end)
+
+    after_each(function()
+        remove(cwd)
+    end)
+
+    it('git_root should return nil', function()
+        local git = Git:new(cwd)
+        eq(nil, git:git_root())
+    end)
+
+    it('is_git_workspace should return false', function()
+        local git = Git:new(cwd)
+        assert.is_false(git:is_workspace())
+    end)
+
+    it('get_branch should return nil', function()
+        local git = Git:new(cwd)
+        eq(nil, git:get_branch())
+    end)
+end)
 
 describe('when cwd is the git root', function()
     local cwd
@@ -52,34 +89,21 @@ describe('when cwd is the git root', function()
     end)
 
     it('get_branch should return the name of the current git branch', function()
-        local git = Git:new(cwd)
+        local git = Git:new(git_root)
         eq('main', git:get_branch())
     end)
-end)
 
-describe('when cwd is outside of the git root', function()
-    local cwd
-
-    before_each(function()
-        cwd = mktmpdir()
+    it('is_workspace_changed should return false for a new git workspace', function()
+        local git = Git:new(git_root)
+        eq(false, git:is_workspace_changed())
     end)
 
-    after_each(function()
-        remove(cwd)
-    end)
+    it('is_workspace_changed should return true when file was added', function()
+        local file = path(cwd, 'test.txt')
+        touch(file)
+        os.execute('git -C ' .. git_root .. ' add ' .. file)
 
-    it('git_root should return nil', function()
         local git = Git:new(cwd)
-        eq(nil, git:git_root())
-    end)
-
-    it('is_git_workspace should return false', function()
-        local git = Git:new(cwd)
-        assert.is_false(git:is_workspace())
-    end)
-
-    it('get_branch should return nil', function()
-        local git = Git:new(cwd)
-        eq(nil, git:get_branch())
+        eq(true, git:is_workspace_changed())
     end)
 end)

@@ -2,6 +2,7 @@ local fs = vim.fs
 local fn = vim.fn
 local uv = vim.loop
 
+---Reads the whole file and returns its content.
 local function read(file_path)
     local f = io.open(file_path, 'r')
     if not f then
@@ -12,20 +13,43 @@ local function read(file_path)
     return content
 end
 
----Looking for the directory with {git_directory} outside the {working_directory}.
----@param working_directory string The path to the directory, from which search of
----   the {git_directory} should begun.
----@param git_directory string The name of the git directory. Usually it's ".git".
+
+---Reads {git_HEAD_path} file as git HEAD file and gets the name of the current git branch.
+---@param git_HEAD_path string Path to the git file HEAD. Usually, it's the git_root/.git/HEAD.
+---@return string # The name of the current branch or first 7 symbols of the commit's hash.
+local function read_git_branch(git_HEAD_path)
+    local head = read(git_HEAD_path)
+    local branch = string.match(head, 'ref: refs/heads/(%w+)')
+        or string.match(head, 'ref: refs/tags/(%w+)')
+        or string.match(head, 'ref: refs/remotes/(%w+)')
+    return branch or head:sub(1, #head - 7)
+end
+
+local function read_is_git_staged(git_index_path)
+    local index = read(git_index_path)
+    if index then error('!' .. index) end
+    return index and string.find(index, 'Staged')
+end
+
+---@class GitProvider: Object
+---@field new fun(root_path: string): GitProvider
+--- Creates a new provider around {working_directory} or {vim.fn.getcwd}.
+--- Optionaly, the name of the git directory can be passed as {git_root}, or '.git' will be used.
+local GitProvider = require('lualine.utils.class'):extend()
+
+---Looking for the path with `.git/` directory outside the {path}.
+---@param path string The path to the directory or file, from which the search of
+---   the `.git/` directory should begun.
 ---@return string # The path to the root of the git workspace, or nil.
-local function find_git_root(working_directory, git_directory)
+function GitProvider.find_git_root(path)
     local function is_git_dir(path)
-        local dir = path .. '/' .. git_directory
+        local dir = path .. '/.git'
         return fn.isdirectory(dir) == 1
     end
 
-    local git_root = is_git_dir(working_directory) and working_directory or nil
+    local git_root = is_git_dir(path) and path or nil
     if not git_root then
-        for dir in fs.parents(working_directory) do
+        for dir in fs.parents(path) do
             if is_git_dir(dir) then
                 git_root = dir
                 break
@@ -35,39 +59,18 @@ local function find_git_root(working_directory, git_directory)
     return git_root
 end
 
-local function read_git_branch(git_HEAD_path)
-    local head = read(git_HEAD_path)
-    local branch = string.match(head, 'ref: refs/heads/(%w+)')
-        or string.match(head, 'ref: refs/tags/(%w+)')
-        or string.match(head, 'ref: refs/remotes/(%w+)')
-    return branch or head:sub(1, #head - 7)
+---@type fun(root_path: string)
+---@param root_path string Path to the root of the git working tree.
+---  If absent, error will be thrown.
+function GitProvider:init(root_path)
+    self.__git_root = root_path
 end
 
-local function read_git_staged(git_index_path)
-    local index = read(git_index_path)
-    return index and string.find(index, 'Staged') ~= nil
-end
-
----@class GitProvider: Object
----@field new fun(working_directory: string, git_directory?: string): GitProvider
---- Creates a new provider around {working_directory} or {vim.fn.getcwd}.
---- Optionaly, the name of the git directory can be passed as {git_root}, or '.git' will be used.
----@field git_branch fun(): string The name of the current branch for the current buffer.
----@field is_git_workspace fun(): boolean `true` when the file of the current buffer is in a git workspace.
----@field is_workspace_changed fun(): boolean `true` if some file in the warkspace was added, or
----  removed, or changed.
-local GitProvider = require('lualine.utils.class'):extend()
-
----@type fun(working_directory?: string, git_directory?: string)
----@param working_directory string Path to the working directory.
----  If absent, result of the {vim.fn.getcwd} will be used.
----@param git_directory string the name of the git directory. `.git` by default.
-function GitProvider:init(working_directory, git_directory)
-    self.__git_directory = git_directory or '.git'
-    self.__working_directory = working_directory or vim.fn.getcwd()
-    self.__git_root = find_git_root(self.__working_directory, self.__git_directory)
-end
-
+---Returns a path to the root git directory, or content of the '.git' directory with
+---specified {subpath}.
+---@param subpath? string The path to file or directory inside the '.git' directory.
+---@return string # If {subpath} is ommited, the path to the {git_root} dirctory will be returned,
+--- or full path to {git_root}/{git_directory}/{subpath}.
 function GitProvider:git_root(subpath)
     if self.__git_root and subpath then
         return string.format('%s/%s/%s', self.__git_root, self.__git_directory, subpath)
@@ -115,16 +118,16 @@ function GitProvider:is_workspace_changed()
         return nil
     end
 
-    local index = self.git_root('index')
+    local index = self:git_root('index')
 
     -- read is_staged
-    self.__staged = read_git_staged(index)
+    self.__staged = read_is_git_staged(index)
 
     -- run poll of the index's changes
     if self.__staged then
         self.__poll_index = uv.new_fs_event()
         uv.fs_event_start(self.__poll_index, index, {}, function()
-            self.__staged = read_git_staged(index)
+            self.__staged = read_is_git_staged(index)
         end)
     end
 
